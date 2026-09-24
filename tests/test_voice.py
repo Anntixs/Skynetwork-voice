@@ -28,12 +28,13 @@ class Network(unittest.TestCase):
         cls.db = os.path.join(cls.tmp.name, "test.db")
         admin = os.path.join(BUILD, "skynet-admin")
         for args in (["1000001", "Pilot One", "pw1"], ["1000002", "Pilot Two", "pw2"],
-                     ["1000003", "Controller", "pw3", "S3"], ["1000004", "Supervisor", "pw4", "SUP"]):
+                     ["1000003", "Controller", "pw3", "S3"], ["1000004", "Supervisor", "pw4", "SUP"],
+                     ["1000005", "Rule Breaker", "pw5"]):
             subprocess.run([admin, "--db", cls.db, "adduser", *args], check=True, capture_output=True)
         cls.voice_port = free_port(socket.SOCK_DGRAM)
         cls.procs = [
             subprocess.Popen([os.path.join(BUILD, "skynet-voice"), "--db", cls.db, "--host", "127.0.0.1",
-                              "--port", str(cls.voice_port)], stderr=subprocess.DEVNULL),
+                              "--port", str(cls.voice_port), "--account-check", "1"], stderr=subprocess.DEVNULL),
         ]
         time.sleep(0.5)
 
@@ -62,6 +63,7 @@ class VoiceClient:
         data = self.sock.recv(1500)
         self.ok = data[3] == 2
         self.token = struct.unpack(">I", data[4:8])[0] if self.ok else None
+        self.reason = data[5:5 + data[4]].decode() if not self.ok else None
 
     def tune(self, *xcvrs):
         body = struct.pack(">IB", self.token, len(xcvrs))
@@ -107,6 +109,27 @@ class VoiceTest(Network):
         for c in (far, other_freq):
             with self.assertRaises(socket.timeout):
                 c.sock.recv(1500)
+
+
+    def test_suspension_kicks_and_blocks(self):
+        admin = os.path.join(BUILD, "skynet-admin")
+        c = VoiceClient(self.voice_port, 1000005, "BAD1", "pw5")
+        self.assertTrue(c.ok)
+        subprocess.run([admin, "--db", self.db, "suspend", "1000005"], check=True, capture_output=True)
+        c.sock.settimeout(3)
+        data = c.sock.recv(1500)
+        self.assertEqual(data[3], 10)  # KICK
+        self.assertEqual(data[5:5 + data[4]].decode(), "CID suspended")
+        again = VoiceClient(self.voice_port, 1000005, "BAD1", "pw5")
+        self.assertFalse(again.ok)
+        self.assertEqual(again.reason, "CID suspended")
+        # The kicked token is dead: keepalives get no answer.
+        c.sock.settimeout(0.5)
+        c.sock.sendto(vpkt(7, struct.pack(">I", c.token)), c.addr)
+        with self.assertRaises(socket.timeout):
+            c.sock.recv(1500)
+        subprocess.run([admin, "--db", self.db, "unsuspend", "1000005"], check=True, capture_output=True)
+        self.assertTrue(VoiceClient(self.voice_port, 1000005, "BAD1", "pw5").ok)
 
 
 if __name__ == "__main__":

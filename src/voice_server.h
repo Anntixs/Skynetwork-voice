@@ -16,6 +16,7 @@
 //   AUDIO_RX    s->c  u32 seq, u8 last, str callsign, u8 n, n * { u32 freq_hz, f32 strength }, opus...
 //   KEEPALIVE   c->s  u32 token            -> KEEPALIVE_ACK s->c (empty)
 //   BYE         c->s  u32 token
+//   KICK        s->c  str reason       (the session is closed: account suspended or deleted)
 #pragma once
 #include <netinet/in.h>
 
@@ -31,7 +32,7 @@ namespace skynet {
 namespace voice {
 enum Type : uint8_t {
     AUTH = 1, AUTH_OK = 2, AUTH_FAIL = 3, TRANSCEIVERS = 4, AUDIO = 5, AUDIO_RX = 6,
-    KEEPALIVE = 7, KEEPALIVE_ACK = 8, BYE = 9,
+    KEEPALIVE = 7, KEEPALIVE_ACK = 8, BYE = 9, KICK = 10,
 };
 constexpr uint8_t kVersion = 1;
 constexpr size_t kMaxTransceivers = 8;
@@ -55,7 +56,9 @@ struct VoiceSession {
 
 class VoiceServer {
 public:
-    VoiceServer(Accounts& accounts, std::string host, uint16_t port);
+    // account_check_ms: how often connected members are re-checked against the database, so a
+    // member suspended on the website loses the radio within that time.
+    VoiceServer(Accounts& accounts, std::string host, uint16_t port, int account_check_ms = 10000);
     ~VoiceServer();
     void bind();
     void run();
@@ -67,10 +70,12 @@ private:
     void on_audio(VoiceSession& s, const uint8_t* p, size_t len);
     VoiceSession* session_for(uint32_t token, const sockaddr_in& from);
     void send_to(const sockaddr_in& to, const std::vector<uint8_t>& pkt);
+    void check_accounts();
 
     Accounts& accounts_;
     std::string host_;
     uint16_t port_;
+    int account_check_ms_;
     int fd_ = -1;
     std::unordered_map<uint32_t, VoiceSession> sessions_;
 };
