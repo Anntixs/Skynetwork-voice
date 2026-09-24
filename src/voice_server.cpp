@@ -82,8 +82,8 @@ bool same_addr(const sockaddr_in& a, const sockaddr_in& b) {
 
 }  // namespace
 
-VoiceServer::VoiceServer(Accounts& accounts, std::string host, uint16_t port)
-    : accounts_(accounts), host_(std::move(host)), port_(port) {}
+VoiceServer::VoiceServer(Accounts& accounts, std::string host, uint16_t port, int account_check_ms)
+    : accounts_(accounts), host_(std::move(host)), port_(port), account_check_ms_(account_check_ms) {}
 
 VoiceServer::~VoiceServer() {
     if (fd_ >= 0) close(fd_);
@@ -94,7 +94,7 @@ uint16_t VoiceServer::port() const { return local_port(fd_); }
 
 void VoiceServer::run() {
     uint8_t buf[voice::kMaxDatagram + 1];
-    int64_t last_sweep = now_ms();
+    int64_t last_sweep = now_ms(), last_check = now_ms();
     for (;;) {
         pollfd pfd{fd_, POLLIN, 0};
         if (poll(&pfd, 1, 1000) < 0 && errno != EINTR) break;
@@ -108,6 +108,10 @@ void VoiceServer::run() {
             }
         }
         int64_t now = now_ms();
+        if (now - last_check >= account_check_ms_) {
+            last_check = now;
+            check_accounts();
+        }
         if (now - last_sweep > 5000) {
             last_sweep = now;
             for (auto it = sessions_.begin(); it != sessions_.end();) {
@@ -119,6 +123,21 @@ void VoiceServer::run() {
                 }
             }
         }
+    }
+}
+
+void VoiceServer::check_accounts() {
+    for (auto it = sessions_.begin(); it != sessions_.end();) {
+        auto m = accounts_.lookup(it->second.cid);
+        if (m && !m->suspended) {
+            ++it;
+            continue;
+        }
+        std::fprintf(stderr, "voice: %s disconnected: CID %d suspended\n", it->second.callsign.c_str(), it->second.cid);
+        Writer w(voice::KICK);
+        w.str("CID suspended");
+        send_to(it->second.addr, w.b);
+        it = sessions_.erase(it);
     }
 }
 
@@ -188,6 +207,7 @@ void VoiceServer::on_auth(const uint8_t* p, size_t len, const sockaddr_in& from)
     for (auto& ch : callsign) ch = char(std::toupper(static_cast<unsigned char>(ch)));
     auto member = accounts_.authenticate(cid, password);
     if (!member) return fail("invalid credentials");
+    if (member->suspended) return fail("CID suspended");
 
     // One voice session per callsign; the same member may reconnect and replace it.
     for (auto it = sessions_.begin(); it != sessions_.end(); ++it) {

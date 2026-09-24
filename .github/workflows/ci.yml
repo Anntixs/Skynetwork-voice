@@ -6,5 +6,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y libssl-dev libsqlite3-dev
-      - run: cmake -B build && cmake --build build -j
-      - run: python3 -m unittest discover -s tests -v
+      - name: Server
+        run: cmake -B build && cmake --build build -j
+      - name: Server tests
+        run: python3 -m unittest discover -s tests -v
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: Client library and tests (against the server built above)
+        run: |
+          dotnet build client/SkyNetwork.Voice.sln -c Release
+          dotnet test client/SkyNetwork.Voice.sln -c Release --no-build
