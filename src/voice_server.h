@@ -52,6 +52,8 @@ struct VoiceSession {
     sockaddr_in addr;
     int64_t last_rx_ms;
     std::vector<Transceiver> transceivers;
+    // A transmission has been described in the log (once per transmission, reset by its last packet).
+    bool tx_logged = false;
 };
 
 class VoiceServer {
@@ -68,6 +70,7 @@ private:
     void on_datagram(const uint8_t* data, size_t len, const sockaddr_in& from);
     void on_auth(const uint8_t* p, size_t len, const sockaddr_in& from);
     void on_audio(VoiceSession& s, const uint8_t* p, size_t len);
+    void log_transmission(const VoiceSession& s, const std::vector<const Transceiver*>& tx) const;
     VoiceSession* session_for(uint32_t token, const sockaddr_in& from);
     void send_to(const sockaddr_in& to, const std::vector<uint8_t>& pkt);
     void check_accounts();

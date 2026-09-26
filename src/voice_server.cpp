@@ -241,6 +241,11 @@ void VoiceServer::on_audio(VoiceSession& s, const uint8_t* p, size_t len) {
     if (!r.ok || tx.empty()) return;
     const uint8_t* opus = r.p;
     size_t opus_len = r.left;
+    if (!s.tx_logged) {
+        log_transmission(s, tx);
+        s.tx_logged = true;
+    }
+    if (last) s.tx_logged = false;
 
     for (auto& [tok, other] : sessions_) {
         if (tok == s.token) continue;
@@ -270,6 +275,52 @@ void VoiceServer::on_audio(VoiceSession& s, const uint8_t* p, size_t len) {
         w.b.insert(w.b.end(), opus, opus + opus_len);
         send_to(other.addr, w.b);
     }
+}
+
+// One line per transmission: where it comes from and, for every other client, whether it is heard
+// or why not (no receiver on that frequency, or out of radio range). Answers "why can't they hear me".
+void VoiceServer::log_transmission(const VoiceSession& s, const std::vector<const Transceiver*>& tx) const {
+    auto mhz = [](uint32_t hz) {
+        char b[16];
+        std::snprintf(b, sizeof b, "%.3f", hz / 1e6);
+        return std::string(b);
+    };
+    const Transceiver* first = tx.front();
+    std::string line = s.callsign + " transmits on";
+    for (const Transceiver* t : tx) line += " " + mhz(t->freq_hz);
+    char pos[96];
+    std::snprintf(pos, sizeof pos, " from %.4f,%.4f %.0f ft:", first->lat, first->lon, first->alt_ft);
+    line += pos;
+    if (sessions_.size() <= 1) line += " nobody else is connected";
+    for (const auto& [tok, other] : sessions_) {
+        if (tok == s.token) continue;
+        std::string verdict;
+        bool same_freq = false;
+        double best_d = -1, best_range = 0;
+        for (const auto& rx : other.transceivers)
+            for (const Transceiver* t : tx) {
+                if (t->freq_hz != rx.freq_hz) continue;
+                same_freq = true;
+                double d = distance_nm(t->lat, t->lon, rx.lat, rx.lon);
+                double range = radio_horizon_nm(t->alt_ft, rx.alt_ft);
+                if (best_d < 0 || d - range < best_d - best_range) {
+                    best_d = d;
+                    best_range = range;
+                }
+            }
+        char b[128];
+        if (other.transceivers.empty()) verdict = "no radios set";
+        else if (!same_freq) {
+            verdict = "not heard, listens on";
+            for (const auto& rx : other.transceivers) verdict += " " + mhz(rx.freq_hz);
+        } else {
+            std::snprintf(b, sizeof b, "%s (%.0f nm away, range %.0f nm)",
+                          best_d <= best_range ? "hears" : "not heard, too far", best_d, best_range);
+            verdict = b;
+        }
+        line += " " + other.callsign + " " + verdict + ";";
+    }
+    std::fprintf(stderr, "voice: %s\n", line.c_str());
 }
 
 }  // namespace skynet
